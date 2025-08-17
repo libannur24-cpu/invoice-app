@@ -1,0 +1,417 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Offline Invoice App (single file)</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+      /* small scrollbar tweak for desktop */
+      ::-webkit-scrollbar { height: 8px; width: 8px }
+      ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 8px }
+    </style>
+  </head>
+  <body class="bg-slate-50 text-slate-900">
+    <div id="root" class="p-4 min-h-screen"></div>
+
+    <!-- React & Babel (development builds) -->
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+    <script type="text/babel">
+// Simple single-file React + Tailwind app that stores data in localStorage.
+const { useState, useEffect, useRef } = React;
+
+// Helpers
+const uid = (prefix='id') => prefix + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1000);
+const formatMoney = (n) => {
+  if (isNaN(n) || n === null) return '0.00';
+  return Number(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+function load(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) { return fallback; }
+}
+function save(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
+
+function App() {
+  // Data stores
+  const [products, setProducts] = useState(() => load('ia_products', [
+    { id: uid('p'), name:'Soap', price:50, stock:100 },
+    { id: uid('p'), name:'Shampoo', price:120, stock:30 },
+  ]));
+  const [clients, setClients] = useState(() => load('ia_clients', [
+    { id: uid('c'), name:'John Doe', phone:'0710000000' },
+    { id: uid('c'), name:'Mary Jane', phone:'0720000000' },
+  ]));
+  const [invoices, setInvoices] = useState(() => load('ia_invoices', []));
+  const [invoiceCounter, setInvoiceCounter] = useState(() => load('ia_invoiceCounter', 1));
+
+  // UI state
+  const [tab, setTab] = useState('invoices');
+
+  useEffect(()=> save('ia_products', products), [products]);
+  useEffect(()=> save('ia_clients', clients), [clients]);
+  useEffect(()=> save('ia_invoices', invoices), [invoices]);
+  useEffect(()=> save('ia_invoiceCounter', invoiceCounter), [invoiceCounter]);
+
+  // Product form
+  const [prodName, setProdName] = useState('');
+  const [prodPrice, setProdPrice] = useState('');
+  const [prodStock, setProdStock] = useState('');
+
+  // Client form
+  const [clientName, setClientName] = useState('');
+  const [clientPhone, setClientPhone] = useState('');
+
+  // Invoice form
+  const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
+  const [invClientId, setInvClientId] = useState('');
+  const [invItems, setInvItems] = useState([]);
+  const [invPayment, setInvPayment] = useState('0');
+
+  // helpers
+  const getProductById = (id) => products.find(p=>p.id===id) || null;
+  const getClientById = (id) => clients.find(c=>c.id===id) || null;
+
+  const computeLineTotal = (item) => {
+    const up = Number(item.unitPrice||0);
+    const q = Number(item.quantity||0);
+    const d = Number(item.discount||0);
+    return up * q * (1 - d/100);
+  }
+  const computeInvoiceTotal = (items) => items.reduce((s,it)=> s + computeLineTotal(it), 0);
+
+  const outstandingForClient = (clientId) => {
+    const invs = invoices.filter(i=>i.clientId === clientId);
+    return invs.reduce((s,i)=> s + (Number(i.total||0) - Number(i.payment||0)), 0);
+  }
+
+  // Add product
+  function addProduct(e) {
+    e.preventDefault();
+    if (!prodName || !prodPrice) return alert('Name and price required');
+    const p = { id: uid('p'), name: prodName.trim(), price: Number(prodPrice), stock: Number(prodStock||0) };
+    setProducts(prev=> [p, ...prev]);
+    setProdName(''); setProdPrice(''); setProdStock('');
+    setTab('products');
+  }
+
+  // Add client
+  function addClient(e) {
+    e.preventDefault();
+    if (!clientName) return alert('Client name required');
+    const c = { id: uid('c'), name: clientName.trim(), phone: clientPhone.trim() };
+    setClients(prev=> [c, ...prev]);
+    setClientName(''); setClientPhone('');
+    setTab('clients');
+  }
+
+  // Invoice item ops
+  function addEmptyItem() {
+    setInvItems(prev => [...prev, { id: uid('li'), productId:'', unitPrice:0, quantity:1, discount:0 }]);
+  }
+  function updateItem(idx, patch) {
+    setInvItems(prev => prev.map((it,i)=> i===idx ? {...it, ...patch} : it));
+  }
+  function removeItem(idx) {
+    setInvItems(prev => prev.filter((_,i)=> i!==idx));
+  }
+
+  function saveInvoice() {
+    if (!invClientId) return alert('Choose a client first');
+    if (invItems.length===0) return alert('Add at least one item');
+
+    // compute totals
+    const total = computeInvoiceTotal(invItems.map(it=>({
+      ...it,
+      unitPrice: Number(it.unitPrice||0),
+      quantity: Number(it.quantity||0),
+      discount: Number(it.discount||0)
+    })));
+
+    const invNumber = 'INV-' + String(invoiceCounter).padStart(4,'0');
+    const newInv = {
+      id: uid('inv'),
+      number: invNumber,
+      date: new Date().toISOString(),
+      clientId: invClientId,
+      items: invItems,
+      total: Number(total),
+      payment: Number(invPayment||0)
+    };
+
+    // optional: reduce stock
+    const updatedProducts = [...products];
+    newInv.items.forEach(it=>{
+      const p = updatedProducts.find(x=>x.id === it.productId);
+      if (p) p.stock = Math.max(0, Number(p.stock) - Number(it.quantity));
+    });
+
+    setProducts(updatedProducts);
+    setInvoices(prev => [newInv, ...prev]);
+    setInvoiceCounter(prev => prev + 1);
+
+    // reset form
+    setIsCreatingInvoice(false);
+    setInvClientId(''); setInvItems([]); setInvPayment('0');
+    setTab('invoices');
+    alert('Invoice saved: ' + invNumber);
+  }
+
+  function startNewInvoice() {
+    setIsCreatingInvoice(true);
+    setInvClientId(''); setInvItems([]); setInvPayment('0');
+    // automatically create first item row so user clicks client then add item
+    // We'll focus client first (client dropdown is first)
+  }
+
+  // Export/Import (simple)
+  function exportData() {
+    const payload = { products, clients, invoices, invoiceCounter };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = 'invoice-data.json'; a.click();
+    URL.revokeObjectURL(url);
+  }
+  function importData(file) {
+    const reader = new FileReader();
+    reader.onload = (e)=>{
+      try {
+        const obj = JSON.parse(e.target.result);
+        if (obj.products) setProducts(obj.products);
+        if (obj.clients) setClients(obj.clients);
+        if (obj.invoices) setInvoices(obj.invoices);
+        if (obj.invoiceCounter) setInvoiceCounter(obj.invoiceCounter);
+        alert('Data imported');
+      } catch(err) { alert('Invalid file'); }
+    }
+    reader.readAsText(file);
+  }
+
+  // UI Components
+  const ProductsTab = (
+    <div>
+      <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <form className="p-4 bg-white rounded shadow" onSubmit={addProduct}>
+          <h3 className="font-semibold mb-2">Add product</h3>
+          <input className="w-full mb-2 p-2 border rounded" placeholder="Product name" value={prodName} onChange={e=>setProdName(e.target.value)} />
+          <div className="grid grid-cols-2 gap-2">
+            <input className="p-2 border rounded" placeholder="Unit price" value={prodPrice} onChange={e=>setProdPrice(e.target.value)} />
+            <input className="p-2 border rounded" placeholder="Stock qty" value={prodStock} onChange={e=>setProdStock(e.target.value)} />
+          </div>
+          <div className="mt-3 flex gap-2">
+            <button className="px-3 py-1 bg-blue-600 text-white rounded" type="submit">Add</button>
+            <button type="button" className="px-3 py-1 border rounded" onClick={()=>{setProdName(''); setProdPrice(''); setProdStock('')}}>Clear</button>
+          </div>
+        </form>
+
+        <div className="p-4 bg-white rounded shadow">
+          <h3 className="font-semibold mb-2">Products ({products.length})</h3>
+          <div className="space-y-2 max-h-64 overflow-auto">
+            {products.map(p=> (
+              <div key={p.id} className="flex items-center justify-between p-2 border rounded">
+                <div>
+                  <div className="font-medium">{p.name}</div>
+                  <div className="text-sm text-slate-600">Price: {formatMoney(p.price)} | Stock: {p.stock}</div>
+                </div>
+                <div className="flex gap-2">
+                  <button className="text-sm px-2 py-1 border rounded" onClick={()=>{
+                    const name = prompt('New name', p.name); if (!name) return;
+                    const price = prompt('New price', p.price); if (price===null) return;
+                    const stock = prompt('New stock', p.stock); if (stock===null) return;
+                    setProducts(prev => prev.map(x=> x.id===p.id ? {...x, name, price: Number(price), stock: Number(stock)} : x));
+                  }}>Edit</button>
+                  <button className="text-sm px-2 py-1 border rounded" onClick={()=>{
+                    if (!confirm('Delete product?')) return; setProducts(prev=> prev.filter(x=> x.id !== p.id));
+                  }}>Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const ClientsTab = (
+    <div>
+      <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
+        <form className="p-4 bg-white rounded shadow" onSubmit={addClient}>
+          <h3 className="font-semibold mb-2">Add client</h3>
+          <input className="w-full mb-2 p-2 border rounded" placeholder="Client name" value={clientName} onChange={e=>setClientName(e.target.value)} />
+          <input className="w-full mb-2 p-2 border rounded" placeholder="Phone (optional)" value={clientPhone} onChange={e=>setClientPhone(e.target.value)} />
+          <div className="mt-3 flex gap-2">
+            <button className="px-3 py-1 bg-blue-600 text-white rounded" type="submit">Add</button>
+            <button type="button" className="px-3 py-1 border rounded" onClick={()=>{setClientName(''); setClientPhone('')}}>Clear</button>
+          </div>
+        </form>
+
+        <div className="p-4 bg-white rounded shadow">
+          <h3 className="font-semibold mb-2">Clients ({clients.length})</h3>
+          <div className="space-y-2 max-h-64 overflow-auto">
+            {clients.map(c=> (
+              <div key={c.id} className="flex items-center justify-between p-2 border rounded">
+                <div>
+                  <div className="font-medium">{c.name}</div>
+                  <div className="text-sm text-slate-600">{c.phone || '—'}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-sm">Outstanding</div>
+                  <div className="font-semibold">{formatMoney(outstandingForClient(c.id))}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+
+  const InvoiceForm = (
+    <div className="p-4 bg-white rounded shadow">
+      <h3 className="font-semibold mb-3">New Invoice</h3>
+      <div className="mb-3">
+        <label className="block text-sm text-slate-700 mb-1">Client</label>
+        <select className="w-full p-2 border rounded" value={invClientId} onChange={e=> setInvClientId(e.target.value)}>
+          <option value="">-- choose client --</option>
+          {clients.map(c=> <option key={c.id} value={c.id}>{c.name}</option>)}
+        </select>
+        {invClientId && (
+          <div className="mt-2 text-sm text-slate-600">Outstanding: {formatMoney(outstandingForClient(invClientId))}</div>
+        )}
+      </div>
+
+      <div className="mb-3">
+        <label className="block text-sm text-slate-700 mb-1">Items</label>
+        <div className="space-y-2">
+          {invItems.map((it, idx)=> (
+            <div key={it.id} className="grid grid-cols-12 gap-2 items-center">
+              <div className="col-span-5">
+                <select className="w-full p-2 border rounded" value={it.productId} onChange={e=>{
+                  const pid = e.target.value;
+                  const prod = getProductById(pid);
+                  updateItem(idx, { productId: pid, unitPrice: prod ? Number(prod.price) : 0 });
+                }}>
+                  <option value="">-- product --</option>
+                  {products.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </div>
+              <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Price" value={it.unitPrice} onChange={e=> updateItem(idx, { unitPrice: e.target.value })} /></div>
+              <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Qty" value={it.quantity} onChange={e=> updateItem(idx, { quantity: e.target.value })} /></div>
+              <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Disc %" value={it.discount} onChange={e=> updateItem(idx, { discount: e.target.value })} /></div>
+              <div className="col-span-1 text-right">
+                <div className="text-sm">{formatMoney(computeLineTotal({...it, unitPrice: Number(it.unitPrice||0), quantity: Number(it.quantity||0), discount: Number(it.discount||0)}))}</div>
+                <button className="text-xs text-red-600" onClick={()=> removeItem(idx)}>remove</button>
+              </div>
+            </div>
+          ))}
+
+          <div>
+            <button className="px-3 py-1 bg-green-600 text-white rounded" onClick={addEmptyItem}>+ Add Item</button>
+          </div>
+        </div>
+      </div>
+
+      <div className="mb-3">
+        <div className="flex justify-between">
+          <div className="text-sm">Subtotal</div>
+          <div className="font-semibold">{formatMoney(computeInvoiceTotal(invItems))}</div>
+        </div>
+      </div>
+
+      <div className="mb-3">
+        <label className="block text-sm text-slate-700 mb-1">Payment received</label>
+        <input className="w-full p-2 border rounded" value={invPayment} onChange={e=> setInvPayment(e.target.value)} />
+      </div>
+
+      <div className="flex gap-2">
+        <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={saveInvoice}>Save Invoice</button>
+        <button className="px-3 py-1 border rounded" onClick={()=> setIsCreatingInvoice(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+
+  const InvoicesTab = (
+    <div>
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <div className="flex gap-2">
+          <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={startNewInvoice}>+ Add Invoice</button>
+          <button className="px-3 py-1 border rounded" onClick={exportData}>Export</button>
+          <label className="px-3 py-1 border rounded cursor-pointer">
+            Import <input type="file" accept="application/json" style={{display:'none'}} onChange={e=> importData(e.target.files[0])} />
+          </label>
+        </div>
+        <div className="text-sm text-slate-600">Invoices: {invoices.length}</div>
+      </div>
+
+      {isCreatingInvoice && InvoiceForm}
+
+      <div className="space-y-2">
+        {invoices.map(inv=> (
+          <div key={inv.id} className="p-3 bg-white rounded shadow flex items-start justify-between">
+            <div>
+              <div className="font-semibold">{inv.number} — {new Date(inv.date).toLocaleString()}</div>
+              <div className="text-sm text-slate-600">Client: {getClientById(inv.clientId)?.name || '—'}</div>
+              <div className="mt-2 text-sm">
+                {inv.items.map((it, i)=> (
+                  <div key={i} className="flex gap-3">
+                    <div className="w-40">{getProductById(it.productId)?.name || '—'}</div>
+                    <div className="text-sm">{it.quantity} × {formatMoney(it.unitPrice)}</div>
+                    <div className="text-sm">disc {it.discount}%</div>
+                    <div className="text-sm font-medium">{formatMoney(computeLineTotal(it))}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-sm">Total</div>
+              <div className="font-semibold">{formatMoney(inv.total)}</div>
+              <div className="text-sm">Paid: {formatMoney(inv.payment)}</div>
+              <div className="text-sm">Due: {formatMoney(inv.total - inv.payment)}</div>
+              <div className="mt-2">
+                <button className="px-2 py-1 border rounded" onClick={()=>{
+                  if (!confirm('Delete invoice?')) return; setInvoices(prev=> prev.filter(x=> x.id !== inv.id));
+                }}>Delete</button>
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="max-w-5xl mx-auto">
+      <header className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-bold">Invoice App (offline)</h1>
+        <div className="text-sm text-slate-600">Local-only demo — data saved in your browser</div>
+      </header>
+
+      <nav className="mb-4">
+        <div className="flex gap-2">
+          <button className={`px-3 py-1 rounded ${tab==='invoices' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('invoices')}>Invoices</button>
+          <button className={`px-3 py-1 rounded ${tab==='clients' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('clients')}>Clients</button>
+          <button className={`px-3 py-1 rounded ${tab==='products' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('products')}>Products</button>
+        </div>
+      </nav>
+
+      <main>
+        {tab === 'products' && ProductsTab}
+        {tab === 'clients' && ClientsTab}
+        {tab === 'invoices' && InvoicesTab}
+      </main>
+
+      <footer className="mt-8 text-sm text-slate-500">Tip: export data before clearing browser storage. I can help convert this into a PWA/native app later.</footer>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+    </script>
+  </body>
+</html>
