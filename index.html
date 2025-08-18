@@ -6,7 +6,6 @@
     <title>Offline Invoice App (single file)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-      /* small scrollbar tweak for desktop */
       ::-webkit-scrollbar { height: 8px; width: 8px }
       ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 8px }
     </style>
@@ -21,14 +20,14 @@
 
     <script type="text/babel">
 // Simple single-file React + Tailwind app that stores data in localStorage.
-const { useState, useEffect, useRef } = React;
+const { useState, useEffect } = React;
 
 // Helpers
 const uid = (prefix='id') => prefix + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1000);
 const formatMoney = (n) => {
   if (isNaN(n) || n === null) return '0.00';
   return Number(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
-}
+};
 
 function load(key, fallback) {
   try {
@@ -81,15 +80,15 @@ function App() {
   const computeLineTotal = (item) => {
     const up = Number(item.unitPrice||0);
     const q = Number(item.quantity||0);
-    const d = Number(item.discount||0);
+    const d = Number(item.discount||0); // % for now (we can switch to fixed later)
     return up * q * (1 - d/100);
-  }
+  };
   const computeInvoiceTotal = (items) => items.reduce((s,it)=> s + computeLineTotal(it), 0);
 
   const outstandingForClient = (clientId) => {
     const invs = invoices.filter(i=>i.clientId === clientId);
     return invs.reduce((s,i)=> s + (Number(i.total||0) - Number(i.payment||0)), 0);
-  }
+  };
 
   // Add product
   function addProduct(e) {
@@ -166,31 +165,6 @@ function App() {
   function startNewInvoice() {
     setIsCreatingInvoice(true);
     setInvClientId(''); setInvItems([]); setInvPayment('0');
-    // automatically create first item row so user clicks client then add item
-    // We'll focus client first (client dropdown is first)
-  }
-
-  // Export/Import (simple)
-  function exportData() {
-    const payload = { products, clients, invoices, invoiceCounter };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = 'invoice-data.json'; a.click();
-    URL.revokeObjectURL(url);
-  }
-  function importData(file) {
-    const reader = new FileReader();
-    reader.onload = (e)=>{
-      try {
-        const obj = JSON.parse(e.target.result);
-        if (obj.products) setProducts(obj.products);
-        if (obj.clients) setClients(obj.clients);
-        if (obj.invoices) setInvoices(obj.invoices);
-        if (obj.invoiceCounter) setInvoiceCounter(obj.invoiceCounter);
-        alert('Data imported');
-      } catch(err) { alert('Invalid file'); }
-    }
-    reader.readAsText(file);
   }
 
   // UI Components
@@ -275,6 +249,7 @@ function App() {
   const InvoiceForm = (
     <div className="p-4 bg-white rounded shadow">
       <h3 className="font-semibold mb-3">New Invoice</h3>
+
       <div className="mb-3">
         <label className="block text-sm text-slate-700 mb-1">Client</label>
         <select className="w-full p-2 border rounded" value={invClientId} onChange={e=> setInvClientId(e.target.value)}>
@@ -282,7 +257,9 @@ function App() {
           {clients.map(c=> <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         {invClientId && (
-          <div className="mt-2 text-sm text-slate-600">Outstanding: {formatMoney(outstandingForClient(invClientId))}</div>
+          <div className="mt-2 text-sm text-slate-600">
+            Outstanding for this client: <span className="font-medium">{formatMoney(outstandingForClient(invClientId))}</span>
+          </div>
         )}
       </div>
 
@@ -317,16 +294,22 @@ function App() {
         </div>
       </div>
 
-      <div className="mb-3">
+      {/* Totals + Payment + Due Now */}
+      <div className="mb-3 space-y-1">
         <div className="flex justify-between">
           <div className="text-sm">Subtotal</div>
           <div className="font-semibold">{formatMoney(computeInvoiceTotal(invItems))}</div>
         </div>
-      </div>
-
-      <div className="mb-3">
-        <label className="block text-sm text-slate-700 mb-1">Payment received</label>
-        <input className="w-full p-2 border rounded" value={invPayment} onChange={e=> setInvPayment(e.target.value)} />
+        <div>
+          <label className="block text-sm text-slate-700 mb-1">Payment received</label>
+          <input className="w-full p-2 border rounded" value={invPayment} onChange={e=> setInvPayment(e.target.value)} />
+        </div>
+        <div className="flex justify-between">
+          <div className="text-sm">Due now</div>
+          <div className="font-semibold">
+            {formatMoney(Math.max(0, computeInvoiceTotal(invItems) - Number(invPayment||0)))}
+          </div>
+        </div>
       </div>
 
       <div className="flex gap-2">
@@ -341,10 +324,6 @@ function App() {
       <div className="mb-4 flex items-center justify-between gap-2">
         <div className="flex gap-2">
           <button className="px-3 py-1 bg-blue-600 text-white rounded" onClick={startNewInvoice}>+ Add Invoice</button>
-          <button className="px-3 py-1 border rounded" onClick={exportData}>Export</button>
-          <label className="px-3 py-1 border rounded cursor-pointer">
-            Import <input type="file" accept="application/json" style={{display:'none'}} onChange={e=> importData(e.target.files[0])} />
-          </label>
         </div>
         <div className="text-sm text-slate-600">Invoices: {invoices.length}</div>
       </div>
@@ -406,7 +385,7 @@ function App() {
         {tab === 'invoices' && InvoicesTab}
       </main>
 
-      <footer className="mt-8 text-sm text-slate-500">Tip: export data before clearing browser storage. I can help convert this into a PWA/native app later.</footer>
+      <footer className="mt-8 text-sm text-slate-500">Tip: after updating, refresh with ?v=3 to bypass cache.</footer>
     </div>
   );
 }
