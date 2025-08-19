@@ -3,11 +3,13 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Offline Invoice App (single file)</title>
+    <title>Offline Invoice App v2 (Profit + Cost + Fixed Discount)</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
+      /* small scrollbar tweak for desktop */
       ::-webkit-scrollbar { height: 8px; width: 8px }
       ::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.2); border-radius: 8px }
+      html, body { height: 100% }
     </style>
   </head>
   <body class="bg-slate-50 text-slate-900">
@@ -19,88 +21,98 @@
     <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
     <script type="text/babel">
-// Simple single-file React + Tailwind app that stores data in localStorage.
+// Offline single-file React + Tailwind app (saves in localStorage).
 const { useState, useEffect } = React;
 
 // Helpers
 const uid = (prefix='id') => prefix + '-' + Date.now().toString(36) + '-' + Math.floor(Math.random()*1000);
-const formatMoney = (n) => {
-  if (isNaN(n) || n === null) return '0.00';
-  return Number(n).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2});
+const fmtMoney = (n) => {
+  const num = Number(n||0);
+  return num.toLocaleString(undefined, { minimumFractionDigits:2, maximumFractionDigits:2 });
 };
 
 function load(key, fallback) {
-  try {
-    const raw = localStorage.getItem(key);
-    return raw ? JSON.parse(raw) : fallback;
-  } catch (e) { return fallback; }
+  try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fallback; } catch(e) { return fallback; }
 }
 function save(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
 
 function App() {
   // Data stores
-  const [products, setProducts] = useState(() => load('ia_products', [
-    { id: uid('p'), name:'Soap', price:50, stock:100 },
-    { id: uid('p'), name:'Shampoo', price:120, stock:30 },
+  const [products, setProducts] = useState(() => load('ia2_products', [
+    { id: uid('p'), name:'Soap', price:50, cost:30, stock:100 },
+    { id: uid('p'), name:'Shampoo', price:120, cost:70, stock:30 },
   ]));
-  const [clients, setClients] = useState(() => load('ia_clients', [
+  const [clients, setClients] = useState(() => load('ia2_clients', [
     { id: uid('c'), name:'John Doe', phone:'0710000000' },
     { id: uid('c'), name:'Mary Jane', phone:'0720000000' },
   ]));
-  const [invoices, setInvoices] = useState(() => load('ia_invoices', []));
-  const [invoiceCounter, setInvoiceCounter] = useState(() => load('ia_invoiceCounter', 1));
+  const [invoices, setInvoices] = useState(() => load('ia2_invoices', []));
+  const [invoiceCounter, setInvoiceCounter] = useState(() => load('ia2_invoiceCounter', 1));
 
   // UI state
   const [tab, setTab] = useState('invoices');
+  const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
 
-  useEffect(()=> save('ia_products', products), [products]);
-  useEffect(()=> save('ia_clients', clients), [clients]);
-  useEffect(()=> save('ia_invoices', invoices), [invoices]);
-  useEffect(()=> save('ia_invoiceCounter', invoiceCounter), [invoiceCounter]);
+  // Persist
+  useEffect(()=> save('ia2_products', products), [products]);
+  useEffect(()=> save('ia2_clients', clients), [clients]);
+  useEffect(()=> save('ia2_invoices', invoices), [invoices]);
+  useEffect(()=> save('ia2_invoiceCounter', invoiceCounter), [invoiceCounter]);
 
-  // Product form
+  // Form states
   const [prodName, setProdName] = useState('');
   const [prodPrice, setProdPrice] = useState('');
+  const [prodCost, setProdCost] = useState('');
   const [prodStock, setProdStock] = useState('');
 
-  // Client form
   const [clientName, setClientName] = useState('');
   const [clientPhone, setClientPhone] = useState('');
 
-  // Invoice form
-  const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
   const [invClientId, setInvClientId] = useState('');
   const [invItems, setInvItems] = useState([]);
-  const [invPayment, setInvPayment] = useState('0');
+  const [invPayment, setInvPayment] = useState('0'); // simple upfront payment field
 
-  // helpers
+  // Utilities
   const getProductById = (id) => products.find(p=>p.id===id) || null;
   const getClientById = (id) => clients.find(c=>c.id===id) || null;
 
-  const computeLineTotal = (item) => {
-    const up = Number(item.unitPrice||0);
-    const q = Number(item.quantity||0);
-    const d = Number(item.discount||0); // % for now (we can switch to fixed later)
-    return up * q * (1 - d/100);
+  // --- Calculations (Fixed per-item discount) ---
+  const lineTotals = (item, costFallback=0) => {
+    const unit = Number(item.unitPrice||0);
+    const qty = Number(item.quantity||0);
+    const discPerItem = Number(item.discount||0); // FIXED amount per item
+    const cost = Number(item.cost ?? costFallback ?? 0);
+    const netUnit = Math.max(0, unit - discPerItem);
+    const revenue = netUnit * qty;           // revenue after discount
+    const totalCost = cost * qty;            // cost snapshot * qty
+    const profit = revenue - totalCost;      // profit after discount
+    return { revenue, totalCost, profit };
   };
-  const computeInvoiceTotal = (items) => items.reduce((s,it)=> s + computeLineTotal(it), 0);
+
+  const computeInvoiceDraftSubtotal = (items) => items.reduce((s,it)=> s + lineTotals(it, getProductById(it.productId)?.cost || 0).revenue, 0);
 
   const outstandingForClient = (clientId) => {
     const invs = invoices.filter(i=>i.clientId === clientId);
     return invs.reduce((s,i)=> s + (Number(i.total||0) - Number(i.payment||0)), 0);
   };
 
-  // Add product
+  // --- Product actions ---
   function addProduct(e) {
     e.preventDefault();
-    if (!prodName || !prodPrice) return alert('Name and price required');
-    const p = { id: uid('p'), name: prodName.trim(), price: Number(prodPrice), stock: Number(prodStock||0) };
+    if (!prodName || prodPrice==='') return alert('Name and selling price are required');
+    const p = {
+      id: uid('p'),
+      name: prodName.trim(),
+      price: Number(prodPrice||0),
+      cost: Number(prodCost||0),
+      stock: Number(prodStock||0)
+    };
     setProducts(prev=> [p, ...prev]);
-    setProdName(''); setProdPrice(''); setProdStock('');
+    setProdName(''); setProdPrice(''); setProdCost(''); setProdStock('');
     setTab('products');
   }
 
-  // Add client
+  // --- Client actions ---
   function addClient(e) {
     e.preventDefault();
     if (!clientName) return alert('Client name required');
@@ -110,7 +122,7 @@ function App() {
     setTab('clients');
   }
 
-  // Invoice item ops
+  // --- Invoice actions ---
   function addEmptyItem() {
     setInvItems(prev => [...prev, { id: uid('li'), productId:'', unitPrice:0, quantity:1, discount:0 }]);
   }
@@ -121,17 +133,36 @@ function App() {
     setInvItems(prev => prev.filter((_,i)=> i!==idx));
   }
 
+  function startNewInvoice() {
+    setIsCreatingInvoice(true);
+    setInvClientId(''); setInvItems([]); setInvPayment('0');
+  }
+
   function saveInvoice() {
     if (!invClientId) return alert('Choose a client first');
     if (invItems.length===0) return alert('Add at least one item');
 
-    // compute totals
-    const total = computeInvoiceTotal(invItems.map(it=>({
-      ...it,
-      unitPrice: Number(it.unitPrice||0),
-      quantity: Number(it.quantity||0),
-      discount: Number(it.discount||0)
-    })));
+    // Snapshot items with cost & productName at time of sale
+    const snapItems = invItems.map(it => {
+      const p = getProductById(it.productId);
+      const unitPrice = Number(it.unitPrice||0);
+      const quantity = Number(it.quantity||0);
+      const discount = Number(it.discount||0); // fixed per-item
+      const cost = p ? Number(p.cost||0) : 0;
+      return {
+        id: it.id,
+        productId: it.productId,
+        productName: p ? p.name : '',
+        unitPrice, quantity, discount, cost
+      };
+    });
+
+    // Compute totals & profit using snapshots
+    let totalRevenue = 0, totalCost = 0, totalProfit = 0;
+    snapItems.forEach(it => {
+      const { revenue, totalCost: cst, profit } = lineTotals(it, it.cost);
+      totalRevenue += revenue; totalCost += cst; totalProfit += profit;
+    });
 
     const invNumber = 'INV-' + String(invoiceCounter).padStart(4,'0');
     const newInv = {
@@ -139,12 +170,13 @@ function App() {
       number: invNumber,
       date: new Date().toISOString(),
       clientId: invClientId,
-      items: invItems,
-      total: Number(total),
+      items: snapItems,
+      total: Number(totalRevenue),
+      profit: Number(totalProfit),
       payment: Number(invPayment||0)
     };
 
-    // optional: reduce stock
+    // Optional: reduce stock
     const updatedProducts = [...products];
     newInv.items.forEach(it=>{
       const p = updatedProducts.find(x=>x.id === it.productId);
@@ -162,50 +194,51 @@ function App() {
     alert('Invoice saved: ' + invNumber);
   }
 
-  function startNewInvoice() {
-    setIsCreatingInvoice(true);
-    setInvClientId(''); setInvItems([]); setInvPayment('0');
-  }
-
-  // UI Components
+  // --- UI ---
   const ProductsTab = (
     <div>
       <div className="mb-4 grid grid-cols-1 md:grid-cols-2 gap-4">
         <form className="p-4 bg-white rounded shadow" onSubmit={addProduct}>
           <h3 className="font-semibold mb-2">Add product</h3>
           <input className="w-full mb-2 p-2 border rounded" placeholder="Product name" value={prodName} onChange={e=>setProdName(e.target.value)} />
-          <div className="grid grid-cols-2 gap-2">
-            <input className="p-2 border rounded" placeholder="Unit price" value={prodPrice} onChange={e=>setProdPrice(e.target.value)} />
+          <div className="grid grid-cols-3 gap-2">
+            <input className="p-2 border rounded" placeholder="Sell price" value={prodPrice} onChange={e=>setProdPrice(e.target.value)} />
+            <input className="p-2 border rounded" placeholder="Cost price" value={prodCost} onChange={e=>setProdCost(e.target.value)} />
             <input className="p-2 border rounded" placeholder="Stock qty" value={prodStock} onChange={e=>setProdStock(e.target.value)} />
           </div>
           <div className="mt-3 flex gap-2">
             <button className="px-3 py-1 bg-blue-600 text-white rounded" type="submit">Add</button>
-            <button type="button" className="px-3 py-1 border rounded" onClick={()=>{setProdName(''); setProdPrice(''); setProdStock('')}}>Clear</button>
+            <button type="button" className="px-3 py-1 border rounded" onClick={()=>{setProdName(''); setProdPrice(''); setProdCost(''); setProdStock('')}}>Clear</button>
           </div>
         </form>
 
         <div className="p-4 bg-white rounded shadow">
           <h3 className="font-semibold mb-2">Products ({products.length})</h3>
           <div className="space-y-2 max-h-64 overflow-auto">
-            {products.map(p=> (
-              <div key={p.id} className="flex items-center justify-between p-2 border rounded">
-                <div>
-                  <div className="font-medium">{p.name}</div>
-                  <div className="text-sm text-slate-600">Price: {formatMoney(p.price)} | Stock: {p.stock}</div>
+            {products.map(p=> {
+              const margin = p.price>0 ? ((p.price - (p.cost||0))/p.price)*100 : 0;
+              return (
+                <div key={p.id} className="flex items-center justify-between p-2 border rounded">
+                  <div>
+                    <div className="font-medium">{p.name}</div>
+                    <div className="text-sm text-slate-600">Sell: {fmtMoney(p.price)} | Cost: {fmtMoney(p.cost||0)} | Stock: {p.stock}</div>
+                    <div className="text-xs text-slate-500">Margin: {margin.toFixed(1)}%</div>
+                  </div>
+                  <div className="flex gap-2">
+                    <button className="text-sm px-2 py-1 border rounded" onClick={()=>{
+                      const name = prompt('New name', p.name); if (name===null) return;
+                      const price = prompt('New selling price', p.price); if (price===null) return;
+                      const cost = prompt('New cost price', p.cost||0); if (cost===null) return;
+                      const stock = prompt('New stock qty', p.stock); if (stock===null) return;
+                      setProducts(prev => prev.map(x=> x.id===p.id ? {...x, name, price: Number(price), cost: Number(cost), stock: Number(stock)} : x));
+                    }}>Edit</button>
+                    <button className="text-sm px-2 py-1 border rounded" onClick={()=>{
+                      if (!confirm('Delete product?')) return; setProducts(prev=> prev.filter(x=> x.id !== p.id));
+                    }}>Delete</button>
+                  </div>
                 </div>
-                <div className="flex gap-2">
-                  <button className="text-sm px-2 py-1 border rounded" onClick={()=>{
-                    const name = prompt('New name', p.name); if (!name) return;
-                    const price = prompt('New price', p.price); if (price===null) return;
-                    const stock = prompt('New stock', p.stock); if (stock===null) return;
-                    setProducts(prev => prev.map(x=> x.id===p.id ? {...x, name, price: Number(price), stock: Number(stock)} : x));
-                  }}>Edit</button>
-                  <button className="text-sm px-2 py-1 border rounded" onClick={()=>{
-                    if (!confirm('Delete product?')) return; setProducts(prev=> prev.filter(x=> x.id !== p.id));
-                  }}>Delete</button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       </div>
@@ -236,7 +269,7 @@ function App() {
                 </div>
                 <div className="text-right">
                   <div className="text-sm">Outstanding</div>
-                  <div className="font-semibold">{formatMoney(outstandingForClient(c.id))}</div>
+                  <div className="font-semibold">{fmtMoney(outstandingForClient(c.id))}</div>
                 </div>
               </div>
             ))}
@@ -257,9 +290,7 @@ function App() {
           {clients.map(c=> <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
         {invClientId && (
-          <div className="mt-2 text-sm text-slate-600">
-            Outstanding for this client: <span className="font-medium">{formatMoney(outstandingForClient(invClientId))}</span>
-          </div>
+          <div className="mt-2 text-sm text-slate-600">Outstanding: {fmtMoney(outstandingForClient(invClientId))}</div>
         )}
       </div>
 
@@ -268,21 +299,22 @@ function App() {
         <div className="space-y-2">
           {invItems.map((it, idx)=> (
             <div key={it.id} className="grid grid-cols-12 gap-2 items-center">
-              <div className="col-span-5">
+              <div className="col-span-4">
                 <select className="w-full p-2 border rounded" value={it.productId} onChange={e=>{
-                  const pid = e.target.value;
-                  const prod = getProductById(pid);
-                  updateItem(idx, { productId: pid, unitPrice: prod ? Number(prod.price) : 0 });
+                  const pid = e.target.value; const p = getProductById(pid);
+                  updateItem(idx, { productId: pid, unitPrice: p ? Number(p.price) : 0 });
                 }}>
                   <option value="">-- product --</option>
                   {products.map(p=> <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </div>
-              <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Price" value={it.unitPrice} onChange={e=> updateItem(idx, { unitPrice: e.target.value })} /></div>
+              <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Unit price" value={it.unitPrice} onChange={e=> updateItem(idx, { unitPrice: e.target.value })} /></div>
               <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Qty" value={it.quantity} onChange={e=> updateItem(idx, { quantity: e.target.value })} /></div>
-              <div className="col-span-2"><input className="w-full p-2 border rounded text-right" placeholder="Disc %" value={it.discount} onChange={e=> updateItem(idx, { discount: e.target.value })} /></div>
+              <div className="col-span-3"><input className="w-full p-2 border rounded text-right" placeholder="Disc per item" value={it.discount} onChange={e=> updateItem(idx, { discount: e.target.value })} /></div>
               <div className="col-span-1 text-right">
-                <div className="text-sm">{formatMoney(computeLineTotal({...it, unitPrice: Number(it.unitPrice||0), quantity: Number(it.quantity||0), discount: Number(it.discount||0)}))}</div>
+                <div className="text-sm font-medium">
+                  {(() => { const { revenue } = lineTotals({ ...it, unitPrice: Number(it.unitPrice||0), quantity: Number(it.quantity||0), discount: Number(it.discount||0) }, getProductById(it.productId)?.cost || 0); return fmtMoney(revenue); })()}
+                </div>
                 <button className="text-xs text-red-600" onClick={()=> removeItem(idx)}>remove</button>
               </div>
             </div>
@@ -294,11 +326,10 @@ function App() {
         </div>
       </div>
 
-      {/* Totals + Payment + Due Now */}
       <div className="mb-3 space-y-1">
         <div className="flex justify-between">
           <div className="text-sm">Subtotal</div>
-          <div className="font-semibold">{formatMoney(computeInvoiceTotal(invItems))}</div>
+          <div className="font-semibold">{fmtMoney(computeInvoiceDraftSubtotal(invItems))}</div>
         </div>
         <div>
           <label className="block text-sm text-slate-700 mb-1">Payment received</label>
@@ -306,9 +337,7 @@ function App() {
         </div>
         <div className="flex justify-between">
           <div className="text-sm">Due now</div>
-          <div className="font-semibold">
-            {formatMoney(Math.max(0, computeInvoiceTotal(invItems) - Number(invPayment||0)))}
-          </div>
+          <div className="font-semibold">{fmtMoney(Math.max(0, computeInvoiceDraftSubtotal(invItems) - Number(invPayment||0)))}</div>
         </div>
       </div>
 
@@ -339,19 +368,23 @@ function App() {
               <div className="mt-2 text-sm">
                 {inv.items.map((it, i)=> (
                   <div key={i} className="flex gap-3">
-                    <div className="w-40">{getProductById(it.productId)?.name || '—'}</div>
-                    <div className="text-sm">{it.quantity} × {formatMoney(it.unitPrice)}</div>
-                    <div className="text-sm">disc {it.discount}%</div>
-                    <div className="text-sm font-medium">{formatMoney(computeLineTotal(it))}</div>
+                    <div className="w-36 truncate" title={it.productName || ''}>{it.productName || '—'}</div>
+                    <div className="text-sm">{it.quantity} × {fmtMoney(it.unitPrice)}</div>
+                    <div className="text-sm">disc {fmtMoney(it.discount)} each</div>
+                    <div className="text-sm">cost {fmtMoney(it.cost)} each</div>
+                    <div className="text-sm font-medium">
+                      {fmtMoney(lineTotals(it, it.cost).revenue)}
+                    </div>
                   </div>
                 ))}
               </div>
             </div>
             <div className="text-right">
               <div className="text-sm">Total</div>
-              <div className="font-semibold">{formatMoney(inv.total)}</div>
-              <div className="text-sm">Paid: {formatMoney(inv.payment)}</div>
-              <div className="text-sm">Due: {formatMoney(inv.total - inv.payment)}</div>
+              <div className="font-semibold">{fmtMoney(inv.total)}</div>
+              <div className="text-sm">Paid: {fmtMoney(inv.payment)}</div>
+              <div className="text-sm">Due: {fmtMoney(inv.total - inv.payment)}</div>
+              <div className="mt-2 text-sm">Profit: <span className="font-semibold">{fmtMoney(inv.profit||0)}</span></div>
               <div className="mt-2">
                 <button className="px-2 py-1 border rounded" onClick={()=>{
                   if (!confirm('Delete invoice?')) return; setInvoices(prev=> prev.filter(x=> x.id !== inv.id));
@@ -364,18 +397,77 @@ function App() {
     </div>
   );
 
+  const ReportsTab = (() => {
+    // Totals across invoices
+    const totals = invoices.reduce((acc, inv) => {
+      acc.revenue += Number(inv.total||0);
+      acc.profit  += Number(inv.profit||0);
+      return acc;
+    }, { revenue:0, profit:0 });
+    const costTotal = totals.revenue - totals.profit;
+
+    // Per-product aggregation from invoice snapshots
+    const productMap = new Map();
+    invoices.forEach(inv => {
+      inv.items.forEach(it => {
+        const key = it.productName || it.productId;
+        if (!productMap.has(key)) productMap.set(key, { name: key, qty:0, revenue:0, cost:0, profit:0 });
+        const agg = productMap.get(key);
+        const { revenue, totalCost, profit } = lineTotals(it, it.cost);
+        agg.qty += Number(it.quantity||0);
+        agg.revenue += revenue; agg.cost += totalCost; agg.profit += profit;
+      });
+    });
+    const perProduct = Array.from(productMap.values()).sort((a,b)=> b.profit - a.profit);
+
+    return (
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="p-4 bg-white rounded shadow">
+          <h3 className="font-semibold mb-2">Totals</h3>
+          <div className="space-y-1 text-sm">
+            <div className="flex justify-between"><span>Revenue</span><span className="font-semibold">{fmtMoney(totals.revenue)}</span></div>
+            <div className="flex justify-between"><span>Cost</span><span className="font-semibold">{fmtMoney(costTotal)}</span></div>
+            <div className="flex justify-between"><span>Profit</span><span className="font-semibold">{fmtMoney(totals.profit)}</span></div>
+            <div className="flex justify-between"><span>Invoices</span><span className="font-semibold">{invoices.length}</span></div>
+          </div>
+        </div>
+
+        <div className="p-4 bg-white rounded shadow">
+          <h3 className="font-semibold mb-2">Profit by product</h3>
+          <div className="max-h-80 overflow-auto divide-y">
+            {perProduct.length === 0 && <div className="text-sm text-slate-500">No data yet</div>}
+            {perProduct.map((r,i)=> (
+              <div key={i} className="py-2 text-sm flex items-center justify-between">
+                <div>
+                  <div className="font-medium">{r.name}</div>
+                  <div className="text-slate-600">Qty {r.qty}</div>
+                </div>
+                <div className="text-right">
+                  <div>Rev {fmtMoney(r.revenue)}</div>
+                  <div>Cost {fmtMoney(r.cost)}</div>
+                  <div className="font-semibold">Profit {fmtMoney(r.profit)}</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  })();
+
   return (
     <div className="max-w-5xl mx-auto">
       <header className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Invoice App (offline)</h1>
-        <div className="text-sm text-slate-600">Local-only demo — data saved in your browser</div>
+        <h1 className="text-2xl font-bold">Invoice App v2 (offline)</h1>
+        <div className="text-sm text-slate-600">Local-only — data saved in your browser</div>
       </header>
 
       <nav className="mb-4">
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap">
           <button className={`px-3 py-1 rounded ${tab==='invoices' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('invoices')}>Invoices</button>
           <button className={`px-3 py-1 rounded ${tab==='clients' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('clients')}>Clients</button>
           <button className={`px-3 py-1 rounded ${tab==='products' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('products')}>Products</button>
+          <button className={`px-3 py-1 rounded ${tab==='reports' ? 'bg-blue-600 text-white' : 'border'}`} onClick={()=> setTab('reports')}>Reports</button>
         </div>
       </nav>
 
@@ -383,9 +475,10 @@ function App() {
         {tab === 'products' && ProductsTab}
         {tab === 'clients' && ClientsTab}
         {tab === 'invoices' && InvoicesTab}
+        {tab === 'reports' && ReportsTab}
       </main>
 
-      <footer className="mt-8 text-sm text-slate-500">Tip: after updating, refresh with ?v=3 to bypass cache.</footer>
+      <footer className="mt-8 text-sm text-slate-500">Tip: if an update doesn't show, hard-refresh or add <code>?v=2</code> to your URL.</footer>
     </div>
   );
 }
