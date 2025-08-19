@@ -39,19 +39,22 @@ function save(key, value) { localStorage.setItem(key, JSON.stringify(value)); }
 function App() {
   // Data stores
   const [products, setProducts] = useState(() => load('ia2_products', [
-    { id: uid('p'), name:'Soap', price:50, cost:30, stock:100 },
-    { id: uid('p'), name:'Shampoo', price:120, cost:70, stock:30 },
+    { id: uid('p'), name:'Salit 3L', price:3800, cost:3750, stock:82 },
+    { id: uid('p'), name:'Pata', price:1300, cost:1245, stock:1380 },
   ]));
   const [clients, setClients] = useState(() => load('ia2_clients', [
-    { id: uid('c'), name:'John Doe', phone:'0710000000' },
-    { id: uid('c'), name:'Mary Jane', phone:'0720000000' },
+    { id: uid('c'), name:'Nur isgow', phone:'0794209149' },
+    { id: uid('c'), name:'Mohamed Nur', phone:'0727086974' },
   ]));
   const [invoices, setInvoices] = useState(() => load('ia2_invoices', []));
   const [invoiceCounter, setInvoiceCounter] = useState(() => load('ia2_invoiceCounter', 1));
+  const [payments, setPayments] = React.useState(JSON.parse(localStorage.getItem("payments")||"[]"));
+   React.useEffect(()=> localStorage.setItem("payments", JSON.stringify(payments)), [payments]);
 
   // UI state
   const [tab, setTab] = useState('invoices');
   const [isCreatingInvoice, setIsCreatingInvoice] = useState(false);
+  
 
   // Persist
   useEffect(()=> save('ia2_products', products), [products]);
@@ -476,7 +479,76 @@ function App() {
         {tab === 'clients' && ClientsTab}
         {tab === 'invoices' && InvoicesTab}
         {tab === 'reports' && ReportsTab}
-      </main>
+        {tab==='clients' && <ClientsTab clients={clients} invoices={invoices} payments={payments} setPayments={setPayments} />}
+
+        
+     function ClientsTab({clients, invoices, payments, setPayments}) {
+  const [search, setSearch] = React.useState("");
+  const [amount, setAmount] = React.useState("");
+  const [method, setMethod] = React.useState("Cash");
+
+  const filtered = clients.filter(c => 
+    c.name.toLowerCase().includes(search.toLowerCase()) || 
+    c.phone.includes(search)
+  );
+
+  function addPayment(clientId) {
+    if (!amount) return;
+    const newPayment = {
+      id: Date.now(),
+      clientId,
+      amount: parseFloat(amount),
+      method,
+      date: new Date().toLocaleString()
+    };
+    setPayments([...payments, newPayment]);
+    setAmount("");
+  }
+
+  function calcOutstanding(clientId) {
+    const totalInvoices = invoices
+      .filter(i => i.clientId===clientId)
+      .reduce((sum,i)=> sum+i.total,0);
+    const totalPayments = payments
+      .filter(p=>p.clientId===clientId)
+      .reduce((sum,p)=> sum+p.amount,0);
+    return totalInvoices - totalPayments;
+  }
+
+  return (
+    <div className="p-4 space-y-4">
+      <input 
+        type="text" 
+        placeholder="Search clients..." 
+        value={search} 
+        onChange={e=>setSearch(e.target.value)} 
+        className="border p-2 rounded w-full"
+      />
+      {filtered.map(c => (
+        <div key={c.id} className="border rounded p-3">
+          <h2 className="font-bold">{c.name} ({c.phone})</h2>
+          <p>Outstanding: ${calcOutstanding(c.id)}</p>
+          <div className="flex gap-2 mt-2">
+            <input 
+              type="number" 
+              value={amount} 
+              onChange={e=>setAmount(e.target.value)} 
+              placeholder="Payment amount" 
+              className="border p-1 rounded w-24"
+            />
+            <select value={method} onChange={e=>setMethod(e.target.value)} className="border p-1 rounded">
+              <option>Cash</option>
+              <option>Mpesa</option>
+              <option>Bank</option>
+            </select>
+            <button onClick={()=>addPayment(c.id)} className="bg-green-600 text-white px-3 rounded">Save</button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+ </main>
 
       <footer className="mt-8 text-sm text-slate-500">Tip: if an update doesn't show, hard-refresh or add <code>?v=2</code> to your URL.</footer>
     </div>
@@ -487,3 +559,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
   </body>
 </html>
+
